@@ -82,18 +82,25 @@ export interface AccountInfo {
   subscriptionType?: string;
 }
 
+/** Which CLI an account authenticates — and therefore which bridge drives it. */
+export type AccountProvider = "claude" | "codex";
+
 /** An account selectable in the composer switcher. The "default" account uses
- * the ambient keychain login; others have their own isolated CLAUDE_CONFIG_DIR
- * (a full `auth login`, full scope), so both chat AND usage % work per-account
- * and they can run in parallel. */
+ * the ambient keychain login; others have their own isolated config dir
+ * (CLAUDE_CONFIG_DIR or CODEX_HOME — a full login, full scope), so both chat
+ * AND usage % work per-account and they can run in parallel. */
 export interface StoredAccount {
   id: string;
   label: string;
   email?: string;
   subscriptionType?: string;
   isDefault: boolean;
-  /** Isolated config dir for a non-default account (undefined for Default). */
+  /** Isolated config dir for a non-default account (undefined for Default).
+   * CLAUDE_CONFIG_DIR for a Claude account, CODEX_HOME for a Codex one — the
+   * two CLIs use the same "everything lives under one dir" isolation model. */
   configDir?: string;
+  /** Absent on accounts stored before Codex support — treat as "claude". */
+  provider?: AccountProvider;
 }
 
 /** One rate-limit bucket from GET /api/oauth/usage. */
@@ -479,6 +486,12 @@ export type ExtensionMessage =
 export interface ExtensionState {
   mode: Mode;
   model?: string;
+  /** Which CLI the active conversation is bound to — drives the model picker
+   * and the "Ask Claude/Codex anything…" placeholder. */
+  provider?: AccountProvider;
+  /** Provider-supplied model list. Set for Codex (its models depend on the
+   * signed-in account); undefined for Claude, whose list is static. */
+  modelOptions?: { id: string; label: string }[];
   effort?: EffortLevel;
   messages: ChatMessage[];
   cliStatus: "starting" | "ready" | "busy" | "error" | "stopped";

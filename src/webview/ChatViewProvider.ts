@@ -11,10 +11,25 @@ import {
   type ApiRetryEvent,
   type TaskUpdateEvent,
 } from "../cli/claude-bridge";
+import { CodexBridge } from "../cli/codex-bridge";
+import {
+  codexAccountInfo,
+  codexLogout,
+  codexModels,
+  codexUsage,
+  startCodexDeviceLogin,
+} from "../cli/codex-auth";
+import { resolveCodexPath, hasCodexBinary } from "../utils/codex-path";
+
+/** Either CLI's bridge. They expose the same methods and emit the same events,
+ * so everything downstream of {@link ChatViewProvider.spawnBridge} is
+ * provider-agnostic — only the construction site branches. */
+type AgentBridge = ClaudeBridge | CodexBridge;
 import { DiffManager } from "../diff/DiffManager";
 import { SnapshotManager } from "../diff/SnapshotManager";
 import { SessionManager } from "../sessions/SessionManager";
 import {
+  AccountProvider,
   ActivityEvent,
   ChatMessage,
   ContextInfo,
@@ -182,13 +197,23 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 const HEARTBEAT_DEAD_MS = 50_000;
 const RECOVERY_COOLDOWN_MS = 90_000;
 
+/** The bundled visual-proof MCP server, in both shapes the two CLIs need. */
+interface LuxureToolsSpec {
+  /** Claude: path to a --mcp-config file. */
+  mcpConfigPath: string;
+  /** Side-channel coordinates, also merged into the child env. */
+  env: Record<string, string>;
+  /** Codex: the server definition itself, injected as a thread config overlay. */
+  server: { command: string; args: string[]; env: Record<string, string> };
+}
+
 interface SessionRuntime {
   sessionId?: string;
   draftId?: string;
   forks?: Record<string, ForkGroup>;
   checkpoints: FileCheckpoint[];
   messages: ChatMessage[];
-  bridge?: ClaudeBridge;
+  bridge?: AgentBridge;
   streamingMessageId: string | null;
   currentStreamText: string;
   /** Set when a tool/thinking block interrupts text, so the next text delta
@@ -206,6 +231,10 @@ interface SessionRuntime {
   /** Which account (StoredAccount.id) this conversation is bound to. "default"
    * or undefined → ambient keychain login; otherwise an isolated config-dir. */
   accountId?: string;
+  /** Codex model for this conversation, kept separate from `model` because the
+   * two providers' model ids are not interchangeable — switching accounts must
+   * not hand a Claude id to Codex (or the reverse). */
+  codexModel?: string;
   /** Watchdog that ends a turn which has gone silent (no CLI output) for too
    * long — e.g. the model parked work in the background and never resumes. */
   watchdogTimer?: ReturnType<typeof setTimeout>;
@@ -430,6 +459,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // stamped at creation); kept in sync with the last explicit choice.
   private mode: Mode = "agent";
   private model: string | undefined;
+  /** Last Codex model chosen, mirroring {@link model} for the Claude side. */
+  private codexModel: string | undefined;
+  /** Models the signed-in Codex account can use, filled lazily by
+   * {@link refreshCodexModels} — the picker is account-specific, unlike
+   * Claude's static list. */
+  private codexModelOptions: { id: string; label: string }[] = [];
   private effort: EffortLevel | undefined;
   private snapshotManager = new SnapshotManager();
   private diffManager = new DiffManager(this.snapshotManager);
@@ -494,6 +529,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     });
     this.model = this.context.workspaceState.get<string>("claude-luxure.model");
+    this.codexModel = this.context.workspaceState.get<string>(
+      "claude-luxure.codexModel"
+    );
     this.effort = this.context.workspaceState.get<EffortLevel>("claude-luxure.effort");
     this.transcripts = new TranscriptStore(context);
     startLoopLagSampler();
@@ -654,7 +692,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return ids;
   }
 
-  private findBridgeForSessionId(sessionId: string): ClaudeBridge | undefined {
+  private findBridgeForSessionId(sessionId: string): AgentBridge | undefined {
     for (const runtime of this.runtimes.values()) {
       if (runtime.sessionId === sessionId && runtime.bridge && runtime.bridge.status !== "stopped") {
         return runtime.bridge;
@@ -1024,7 +1062,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * into the project's transcript folder (which would otherwise pollute the
    * history); the transcript it does write is deleted afterwards. */
   private runClaudePrint(prompt: string, accountId?: string): Promise<string> {
-    const configDir = this.getConfigDirForAccount(accountId);
+    // These one-shots are always `claude -p` (post-it emoji, summaries). A Codex
+    // conversation's config dir is a CODEX_HOME — handing it to the Claude CLI
+    // as CLAUDE_CONFIG_DIR would point it at a profile with no Claude
+    // credential, so fall back to the ambient login instead.
+    const configDir = this.isCodexAccount(accountId)
+      ? undefined
+      : this.getConfigDirForAccount(accountId);
     const env: NodeJS.ProcessEnv = { ...process.env };
     if (configDir) {
       env.CLAUDE_CONFIG_DIR = configDir;
@@ -2271,8 +2315,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case "changeModel": {
         const runtime = this.getActiveRuntime();
-        runtime.model = message.model;
         runtime.lastContext = undefined;
+        if (this.isCodexAccount(runtime.accountId)) {
+          // Keep the Claude slot untouched: switching this conversation back to
+          // a Claude account must restore the Claude model it had, not inherit
+          // a gpt-* id the Claude CLI would reject.
+          runtime.codexModel = message.model;
+          this.codexModel = message.model;
+          this.context.workspaceState.update(
+            "claude-luxure.codexModel",
+            this.codexModel
+          );
+          if (runtime.bridge) {
+            runtime.bridge.restart({ model: message.model });
+          }
+          this.persistSettingsFor(runtime);
+          this.sendState();
+          break;
+        }
+        runtime.model = message.model;
         this.model = message.model;
         this.context.workspaceState.update("claude-luxure.model", this.model);
         if (runtime.bridge) {
@@ -2617,8 +2678,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       email: this.accountEmail,
       subscriptionType: this.accountSubscription,
       isDefault: true,
+      provider: "claude",
     };
-    return [def, ...this.getAddedAccounts()];
+    // Accounts stored before Codex support carry no `provider`; normalise here
+    // so every consumer (switcher badge, usage poll) can read it directly.
+    return [
+      def,
+      ...this.getAddedAccounts().map((a) => ({
+        ...a,
+        provider: a.provider ?? ("claude" as AccountProvider),
+      })),
+    ];
   }
 
   private labelFor(accountId: string | undefined): string {
@@ -2637,6 +2707,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return undefined;
     }
     return this.getAddedAccounts().find((a) => a.id === accountId)?.configDir;
+  }
+
+  /** Which CLI an account speaks. The synthetic "Default" is always Claude (it
+   * IS the ambient ~/.claude login), and accounts stored before Codex support
+   * carry no `provider` field — both fall back to "claude". */
+  private providerFor(accountId: string | undefined): AccountProvider {
+    if (!accountId || accountId === "default") {
+      return "claude";
+    }
+    return (
+      this.getAddedAccounts().find((a) => a.id === accountId)?.provider ?? "claude"
+    );
+  }
+
+  private isCodexAccount(accountId: string | undefined): boolean {
+    return this.providerFor(accountId) === "codex";
   }
 
   /** Accounts the user deliberately disconnected (their stored token was
@@ -2676,6 +2762,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     ) {
       return true;
     }
+    if (this.isCodexAccount(accountId)) {
+      // Codex has no readable credential record; asking its app-server who it
+      // is IS the check — a logged-out home answers with a null account.
+      const info = await codexAccountInfo(
+        resolveCodexPath(),
+        this.getConfigDirForAccount(accountId)
+      );
+      return !info;
+    }
     return this.isOAuthDead(await this.resolveOAuthRecord(accountId));
   }
 
@@ -2703,7 +2798,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     const configDir = this.getConfigDirForAccount(accountId);
     if (configDir) {
-      this.linkSharedAssets(configDir);
+      this.linkSharedAssets(configDir, this.providerFor(accountId));
     }
     if (runtime.bridge) {
       vscode.window.showInformationMessage(
@@ -2715,9 +2810,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sendAccountsList();
     this.sendState();
     void this.pollUsageForAll();
+    void this.refreshCodexModels(accountId);
   }
 
+  /** "Add account…" — pick the CLI first, then run that CLI's login. Both end
+   * with an isolated profile dir under globalStorage/accounts/<id>, which is
+   * CLAUDE_CONFIG_DIR for Claude and CODEX_HOME for Codex. */
   private async handleAddAccount(): Promise<void> {
+    const codexAvailable = hasCodexBinary();
+    const picked = await vscode.window.showQuickPick(
+      [
+        {
+          label: "$(sparkle) Claude",
+          description: "Anthropic — claude.ai login",
+          provider: "claude" as AccountProvider,
+        },
+        {
+          label: "$(rocket) Codex",
+          description: codexAvailable
+            ? "OpenAI — ChatGPT device-code login"
+            : "OpenAI — `codex` CLI not found on this machine",
+          provider: "codex" as AccountProvider,
+        },
+      ],
+      { title: "Add account", placeHolder: "Which CLI should this account use?" }
+    );
+    if (!picked) {
+      return;
+    }
+    if (picked.provider === "codex" && !codexAvailable) {
+      const choice = await vscode.window.showErrorMessage(
+        "Couldn't find the `codex` CLI. Install it (`npm i -g @openai/codex` or `brew install codex`), or set claude-luxure.codexPath if it lives somewhere unusual.",
+        "Open settings"
+      );
+      if (choice === "Open settings") {
+        void vscode.commands.executeCommand(
+          "workbench.action.openSettings",
+          "claude-luxure.codexPath"
+        );
+      }
+      return;
+    }
+
     const id = `acct-${generateId()}`;
     const configDir = path.join(
       this.context.globalStorageUri.fsPath,
@@ -2726,9 +2860,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
     try {
       fs.mkdirSync(configDir, { recursive: true });
-      this.linkSharedAssets(configDir);
+      this.linkSharedAssets(configDir, picked.provider);
     } catch (err) {
       vscode.window.showErrorMessage(`Could not create account profile: ${err}`);
+      return;
+    }
+
+    if (picked.provider === "codex") {
+      await this.addCodexAccount(id, configDir);
       return;
     }
 
@@ -2768,6 +2907,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       subscriptionType: info?.subscriptionType,
       isDefault: false,
       configDir,
+      provider: "claude",
     });
     await this.context.globalState.update("claude-luxure.accounts", added);
     this.sendAccountsList();
@@ -2777,6 +2917,97 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
   }
 
+  /**
+   * Connect a Codex account into an isolated CODEX_HOME via ChatGPT device
+   * auth. Codex's browser login wants a localhost:1455 callback; device auth
+   * instead hands back a URL and a short code, which is both nicer here and the
+   * only flow that works over a remote/SSH window.
+   *
+   * The code is shown in a modal with a "Copy code & open" button, because the
+   * user has to carry it to a browser — a toast that can be missed would strand
+   * the login. Returns after the login completes (or the user gives up), at
+   * which point the account is only stored if it actually authenticated.
+   */
+  private async addCodexAccount(id: string, configDir: string): Promise<void> {
+    const codexPath = resolveCodexPath();
+    const login = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Starting Codex sign-in…" },
+      () => startCodexDeviceLogin(codexPath, configDir)
+    );
+    if (!login) {
+      this.discardAccountDir(configDir);
+      vscode.window.showErrorMessage(
+        "Couldn't start the Codex device sign-in. Check that `codex` runs from a terminal, then try again."
+      );
+      return;
+    }
+
+    // Don't await — the modal must stay open while we watch for completion.
+    void vscode.window
+      .showInformationMessage(
+        `Sign in to Codex: enter code ${login.userCode}`,
+        {
+          modal: true,
+          detail: `1. Open ${login.verificationUrl}\n2. Enter the code: ${login.userCode}\n\nThe code expires in 15 minutes. This panel picks the login up automatically — you can close this dialog.`,
+        },
+        "Copy code & open"
+      )
+      .then((choice) => {
+        if (choice === "Copy code & open") {
+          void vscode.env.clipboard.writeText(login.userCode);
+          void vscode.env.openExternal(vscode.Uri.parse(login.verificationUrl));
+        }
+      });
+
+    const ok = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Waiting for Codex sign-in (code ${login.userCode})…`,
+        cancellable: true,
+      },
+      (_p, token) => {
+        token.onCancellationRequested(() => login.cancel());
+        return login.completed;
+      }
+    );
+
+    if (!ok) {
+      this.discardAccountDir(configDir);
+      vscode.window.showWarningMessage(
+        "Codex sign-in wasn't completed — account not added. Try again when ready."
+      );
+      return;
+    }
+
+    const info = await codexAccountInfo(codexPath, configDir);
+    const added = this.getAddedAccounts();
+    added.push({
+      id,
+      label: info?.email || `Codex account ${added.length + 1}`,
+      email: info?.email,
+      subscriptionType: info?.planType,
+      isDefault: false,
+      configDir,
+      provider: "codex",
+    });
+    await this.context.globalState.update("claude-luxure.accounts", added);
+    await this.setLoggedOut(id, false);
+    this.sendAccountsList();
+    void this.pollUsageForAll();
+    void this.refreshCodexModels(id);
+    vscode.window.showInformationMessage(
+      `Added ${info?.email || "Codex account"}. Select it from the account switcher to chat with Codex.`
+    );
+  }
+
+  private discardAccountDir(configDir: string): void {
+    try {
+      fs.rmSync(configDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+
   /** Share assets from ~/.claude into an account's isolated config dir via
    * symlinks. Read-mostly assets (skills/plugins/memory) so added accounts see
    * the same skills as Default; and crucially the `projects` session store, so a
@@ -2784,7 +3015,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * accounts (sessions live inside CLAUDE_CONFIG_DIR, so without this a switch
    * fails with "No conversation found"). Auth/settings stay isolated. Idempotent
    * — also called on spawn/switch to retrofit older accounts. */
-  private linkSharedAssets(configDir: string): void {
+  private linkSharedAssets(
+    configDir: string,
+    provider: AccountProvider = "claude"
+  ): void {
+    if (provider === "codex") {
+      // Same idea, Codex's layout: skills/prompts/AGENTS.md are read-mostly, and
+      // `sessions` holds the thread rollouts that `thread/resume` reads — share
+      // it or a conversation started under one Codex account can't be resumed
+      // after switching to another.
+      const codexBase = path.join(os.homedir(), ".codex");
+      for (const asset of ["skills", "prompts", "AGENTS.md", "plugins"]) {
+        this.linkIfAbsent(path.join(codexBase, asset), path.join(configDir, asset));
+      }
+      this.shareSessionStore(
+        path.join(codexBase, "sessions"),
+        path.join(configDir, "sessions")
+      );
+      return;
+    }
     const base = path.join(os.homedir(), ".claude");
     for (const asset of ["skills", "plugins", "CLAUDE.md", "commands", "agents"]) {
       this.linkIfAbsent(path.join(base, asset), path.join(configDir, asset));
@@ -2874,7 +3123,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const acct = this.getAddedAccounts().find((a) => a.id === accountId);
     // Revoke and delete the token before the profile goes — afterwards its
     // config dir is unresolvable and the keychain entry would be orphaned.
-    await this.clearStoredCredential(accountId);
+    // Codex keeps its credential inside CODEX_HOME (no keychain), so removing
+    // the dir below is what deletes it; still revoke server-side first.
+    if (acct?.provider === "codex") {
+      await codexLogout(resolveCodexPath(), acct.configDir);
+    } else {
+      await this.clearStoredCredential(accountId);
+    }
     await this.setLoggedOut(accountId, false);
     this.authFailedAccountIds.delete(accountId);
     const added = this.getAddedAccounts().filter((a) => a.id !== accountId);
@@ -2919,6 +3174,159 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return `'${p.replace(/'/g, "'\\''")}'`;
   }
 
+  /**
+   * Reconnect a Codex account: a fresh device-code login into the same
+   * CODEX_HOME, which overwrites auth.json on success.
+   *
+   * Deliberately does NOT log out first, unlike the Claude path. `codex logout`
+   * revokes the refresh token server-side, so clearing before a login that the
+   * user might abandon would turn "recreate my token" into "destroy my login" —
+   * the exact failure that cost the Telegram bridge its ChatGPT session. The
+   * old credential simply stays valid until a new one replaces it.
+   */
+  private async reauthCodexAccount(
+    accountId: string,
+    configDir: string | undefined,
+    label: string,
+    opts?: { skipConfirm?: boolean }
+  ): Promise<void> {
+    if (!opts?.skipConfirm && !(await this.isAccountDisconnected(accountId))) {
+      const choice = await vscode.window.showWarningMessage(
+        `Reconnect ${label}?`,
+        {
+          modal: true,
+          detail:
+            "Starts a fresh ChatGPT device sign-in for this Codex account. The current login keeps working until the new one completes.",
+        },
+        "Reconnect"
+      );
+      if (choice !== "Reconnect") {
+        return;
+      }
+    }
+
+    if (configDir) {
+      this.linkSharedAssets(configDir, "codex");
+    }
+
+    const codexPath = resolveCodexPath();
+    const login = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Starting Codex sign-in…" },
+      () => startCodexDeviceLogin(codexPath, configDir)
+    );
+    if (!login) {
+      vscode.window.showErrorMessage(
+        `Couldn't start the Codex sign-in for ${label}. Check that \`codex\` runs from a terminal.`
+      );
+      return;
+    }
+
+    void vscode.window
+      .showInformationMessage(
+        `Reconnect ${label}: enter code ${login.userCode}`,
+        {
+          modal: true,
+          detail: `1. Open ${login.verificationUrl}\n2. Enter the code: ${login.userCode}\n\nThe code expires in 15 minutes. You can close this dialog — the panel picks the login up automatically.`,
+        },
+        "Copy code & open"
+      )
+      .then((choice) => {
+        if (choice === "Copy code & open") {
+          void vscode.env.clipboard.writeText(login.userCode);
+          void vscode.env.openExternal(vscode.Uri.parse(login.verificationUrl));
+        }
+      });
+
+    const ok = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Waiting for Codex sign-in (code ${login.userCode})…`,
+        cancellable: true,
+      },
+      (_p, token) => {
+        token.onCancellationRequested(() => login.cancel());
+        return login.completed;
+      }
+    );
+    if (!ok) {
+      vscode.window.showWarningMessage(
+        `Codex sign-in for ${label} wasn't completed — nothing changed. Click Reconnect to try again.`
+      );
+      void this.pollUsageForAll();
+      return;
+    }
+
+    this.authFailedAccountIds.delete(accountId);
+    await this.setLoggedOut(accountId, false);
+    await this.refreshCodexProfile(accountId, configDir);
+    this.sendAccountsList();
+    void this.pollUsageForAll();
+    vscode.window.showInformationMessage(`Reconnected ${this.labelFor(accountId)}.`);
+  }
+
+  /** Re-read a Codex account's email/plan after a login (a reconnect is allowed
+   * to land on a different ChatGPT account). */
+  private async refreshCodexProfile(
+    accountId: string,
+    configDir: string | undefined
+  ): Promise<void> {
+    const info = await codexAccountInfo(resolveCodexPath(), configDir);
+    if (!info) {
+      return;
+    }
+    const added = this.getAddedAccounts().map((a) =>
+      a.id === accountId
+        ? {
+            ...a,
+            label: info.email || a.label,
+            email: info.email,
+            subscriptionType: info.planType,
+          }
+        : a
+    );
+    await this.context.globalState.update("claude-luxure.accounts", added);
+  }
+
+  /** Sign a Codex account out. `account/logout` revokes the refresh token
+   * server-side — irreversible, so the confirmation says so plainly. */
+  private async disconnectCodexAccount(accountId: string): Promise<void> {
+    const label = this.labelFor(accountId);
+    const choice = await vscode.window.showWarningMessage(
+      `Disconnect ${label}?`,
+      {
+        modal: true,
+        detail:
+          "Signs this Codex account out and revokes its token with OpenAI. The account stays in the list — use Reconnect to sign in again.",
+      },
+      "Disconnect"
+    );
+    if (choice !== "Disconnect") {
+      return;
+    }
+
+    const configDir = this.getConfigDirForAccount(accountId);
+    const ok = await codexLogout(resolveCodexPath(), configDir);
+    if (!ok) {
+      vscode.window.showErrorMessage(
+        `Could not sign ${label} out — it is still connected.`
+      );
+      void this.pollUsageForAll();
+      return;
+    }
+
+    await this.setLoggedOut(accountId, true);
+    this.sendAccountsList();
+    void this.pollUsageForAll();
+
+    const next = await vscode.window.showInformationMessage(
+      `Disconnected ${label}. Conversations on this account can't send until you reconnect.`,
+      "Reconnect"
+    );
+    if (next === "Reconnect") {
+      await this.handleReauthAccount(accountId, { skipConfirm: true });
+    }
+  }
+
   /** Re-run the browser login for an account — the "Reconnect" action, offered on
    * every row of the switcher. Heals an account whose stored token can no longer
    * authenticate (see {@link isOAuthDead}), and equally recreates a token on
@@ -2939,6 +3347,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const label = this.labelFor(accountId);
     const isDefault = !accountId || accountId === "default";
 
+    if (this.isCodexAccount(accountId)) {
+      await this.reauthCodexAccount(accountId, configDir, label, opts);
+      return;
+    }
+
     // Reconnecting a *working* account throws away a good token, so confirm it.
     // A disconnected one has nothing to lose — keep that path one click.
     if (!opts?.skipConfirm && !(await this.isAccountDisconnected(accountId))) {
@@ -2958,7 +3371,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     if (configDir) {
-      this.linkSharedAssets(configDir);
+      this.linkSharedAssets(configDir, this.providerFor(accountId));
     }
 
     // Clear first — see the note above. The switcher shows the account as
@@ -3064,6 +3477,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * profile and its config dir stay, so Reconnect can log the same or a
    * different Claude account back into the slot. */
   private async handleLogoutAccount(accountId: string): Promise<void> {
+    if (this.isCodexAccount(accountId)) {
+      await this.disconnectCodexAccount(accountId);
+      return;
+    }
     const label = this.labelFor(accountId);
     const isDefault = !accountId || accountId === "default";
 
@@ -3377,6 +3794,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const runtime = this.activeKey
         ? this.runtimes.get(this.activeKey)
         : undefined;
+      if (this.isCodexAccount(runtime?.accountId)) {
+        const usage = await codexUsage(
+          resolveCodexPath(),
+          this.getConfigDirForAccount(runtime?.accountId)
+        );
+        this.postMessage({ type: "usageUpdate", usage });
+        return;
+      }
       const token = await this.resolveUsageToken(runtime?.accountId);
       if (!token) {
         this.postMessage({ type: "usageUpdate", usage: null });
@@ -3404,6 +3829,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const loggedOutIds = new Set(this.getLoggedOutAccountIds());
       const entries = await Promise.all(
         accounts.map(async (a) => {
+          // Codex reports quota over its own protocol — no OAuth record to read,
+          // no HTTP call to make. A null answer IS the disconnected signal: the
+          // app-server only serves rate limits for a home that's logged in.
+          if (a.provider === "codex") {
+            const usage = await codexUsage(resolveCodexPath(), a.configDir);
+            let out = loggedOutIds.has(a.id);
+            if (usage) {
+              this.authFailedAccountIds.delete(a.id);
+              if (out) {
+                await this.setLoggedOut(a.id, false);
+                out = false;
+              }
+            }
+            const dead = !usage || this.authFailedAccountIds.has(a.id) || out;
+            return [a.id, usage, dead, out] as const;
+          }
           const record = await this.resolveOAuthRecord(a.id);
           const heuristicDead = this.isOAuthDead(record);
           const token = record?.accessToken;
@@ -3972,7 +4413,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Ensure the account's config dir shares the session store + skills (also
     // retrofits accounts created before sharing was introduced).
     if (configDir) {
-      this.linkSharedAssets(configDir);
+      this.linkSharedAssets(configDir, this.providerFor(runtime.accountId));
     }
 
     // A worktree-backed conversation runs in its own checkout with remapped
@@ -3983,18 +4424,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // spawn so the model can push screenshots/annotations into this chat.
     const luxureTools = await this.prepareLuxureTools(runtime);
 
-    const bridge = new ClaudeBridge({
-      cwd,
-      mode: runtime.mode ?? this.mode,
-      model: runtime.model ?? this.model,
-      effort: runtime.effort ?? this.effort,
-      sessionId: runtime.sessionId,
-      sessionName: runtime.sessionName,
-      configDir,
-      claudePath: resolveClaudePath(),
-      env: runtime.worktreeEnv,
-      luxureTools,
-    });
+    // The two bridges are interchangeable from here on — same methods, same
+    // events — so only this construction branches on the bound account's CLI.
+    const bridge: AgentBridge = this.isCodexAccount(runtime.accountId)
+      ? new CodexBridge({
+          cwd,
+          mode: runtime.mode ?? this.mode,
+          // Claude model ids mean nothing to Codex; a conversation that never
+          // picked a Codex model gets the account's default (model omitted).
+          model: this.codexModelFor(runtime),
+          effort: runtime.effort ?? this.effort,
+          sessionId: runtime.sessionId,
+          sessionName: runtime.sessionName,
+          configDir,
+          codexPath: resolveCodexPath(),
+          env: runtime.worktreeEnv,
+          luxureTools,
+          luxureServer: this.luxureServerSpec(luxureTools),
+        })
+      : new ClaudeBridge({
+          cwd,
+          mode: runtime.mode ?? this.mode,
+          model: runtime.model ?? this.model,
+          effort: runtime.effort ?? this.effort,
+          sessionId: runtime.sessionId,
+          sessionName: runtime.sessionName,
+          configDir,
+          claudePath: resolveClaudePath(),
+          env: runtime.worktreeEnv,
+          luxureTools,
+        });
 
     runtime.bridge = bridge;
     this.attachBridgeHandlers(runtimeKey, runtime, bridge);
@@ -4039,7 +4498,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * (channel bind failure / missing bundle) — the chat works without proofs. */
   private async prepareLuxureTools(
     runtime: SessionRuntime
-  ): Promise<{ mcpConfigPath: string; env: Record<string, string> } | undefined> {
+  ): Promise<LuxureToolsSpec | undefined> {
     const channel = await this.ensureProofChannel();
     if (!channel) {
       return undefined;
@@ -4085,7 +4544,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.cleanupStaleMcpConfigs(dir);
     const mcpConfigPath = path.join(dir, `luxure-${bridgeId}.json`);
     fs.writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2));
-    return { mcpConfigPath, env };
+    // `server` is the same definition in structured form: Claude reads it from
+    // the file above via --mcp-config, Codex takes it as a thread config
+    // overlay (`mcp_servers.luxure`) since it has no equivalent flag.
+    return { mcpConfigPath, env, server: config.mcpServers.luxure };
+  }
+
+  /** The luxure MCP server definition, in the shape CodexBridge wants. */
+  private luxureServerSpec(
+    tools: LuxureToolsSpec | undefined
+  ): { command: string; args: string[]; env: Record<string, string> } | undefined {
+    return tools?.server;
+  }
+
+  /** The Codex model for a conversation. Model ids are provider-specific, so a
+   * Claude id left over from a previous account must not be forwarded — Codex
+   * would reject it. Undefined lets the account's own default win. */
+  private codexModelFor(runtime: SessionRuntime): string | undefined {
+    const model = runtime.codexModel ?? this.codexModel;
+    return model && model.trim() ? model : undefined;
+  }
+
+  /** Refresh the Codex model picker for an account. Codex advertises what the
+   * signed-in plan can actually run, so this is per-account and can change on
+   * reconnect — unlike Claude's static list baked into the webview. */
+  private async refreshCodexModels(accountId: string | undefined): Promise<void> {
+    if (!this.isCodexAccount(accountId)) {
+      return;
+    }
+    const models = await codexModels(
+      resolveCodexPath(),
+      this.getConfigDirForAccount(accountId)
+    );
+    if (models.length === 0) {
+      return; // keep the last known list rather than emptying the picker
+    }
+    this.codexModelOptions = models;
+    this.sendState();
   }
 
   /** Best-effort removal of config files from long-gone spawns. */
@@ -4274,7 +4769,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private attachBridgeHandlers(
     runtimeKey: string,
     runtime: SessionRuntime,
-    bridge: ClaudeBridge
+    bridge: AgentBridge
   ): void {
     const isActive = () => this.isActiveKey(runtimeKey);
     const thisBridge = bridge;
@@ -4696,7 +5191,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     bridge.on("event", (event: ClaudeEvent) => {
-      log("EVENT", event.type, event.subtype || "");
+      const e = event as Record<string, any>;
+      // Keep payloads out of logs, but retain the identifiers needed to tell
+      // simultaneous conversations, child agents, and item types apart.
+      log("EVENT", event.type, event.subtype || "", JSON.stringify({
+        session: runtimeKey,
+        threadId: e.threadId || e.thread?.id,
+        turnId: e.turnId || e.turn?.id,
+        itemId: e.itemId || e.item?.id,
+        itemType: e.item?.type,
+        status: e.turn?.status || e.item?.status,
+      }));
       // Any CLI output means the turn is still alive — push the watchdog out.
       if (!isStale() && runtime.streamingMessageId) {
         this.armStreamWatchdog(runtimeKey, runtime);
@@ -5002,6 +5507,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (u.prompt && !t.prompt) {
       t.prompt = u.prompt;
     }
+    if (u.background !== undefined) {
+      t.background = u.background;
+    }
     switch (u.kind) {
       case "task_started":
         if (u.description) {
@@ -5226,6 +5734,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * next message) still works. */
   private fireStreamWatchdog(runtimeKey: string, runtime: SessionRuntime): void {
     if (!runtime.streamingMessageId) {
+      return;
+    }
+    // Codex app-server can be silent while reasoning or generating a large
+    // tool call. Only turn/completed, an error, or process exit can settle it;
+    // elapsed silence is not evidence that its turn (or its agents) ended.
+    if (runtime.bridge instanceof CodexBridge && runtime.bridge.isAlive) {
+      log("WARN", "Codex turn quiet; keeping stream open:", runtimeKey);
+      this.armStreamWatchdog(runtimeKey, runtime);
       return;
     }
     log("WARN", "Stream watchdog fired; ending stalled turn:", runtimeKey);
@@ -5771,7 +6287,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         : undefined,
       mode: runtime.mode ?? this.mode,
-      model: runtime.model ?? this.model,
+      // A Codex conversation reads its model from the Codex slot — the two
+      // providers' ids aren't interchangeable, so they're kept apart.
+      model: this.isCodexAccount(runtime.accountId)
+        ? this.codexModelFor(runtime)
+        : runtime.model ?? this.model,
+      provider: this.providerFor(runtime.accountId),
+      // Claude's model list is static and lives in the webview; Codex's depends
+      // on the signed-in account, so it's pushed with the state.
+      modelOptions: this.isCodexAccount(runtime.accountId)
+        ? this.codexModelOptions
+        : undefined,
       effort: runtime.effort ?? this.effort,
       messages: windowed.map((m) => this.slimMessage(m)),
       cliStatus: runtime.bridge?.status || runtime.cliStatus || "stopped",

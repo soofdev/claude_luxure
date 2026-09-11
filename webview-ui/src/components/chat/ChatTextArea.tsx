@@ -53,6 +53,8 @@ import {
 interface ChatTextAreaProps {
   mode: Mode;
   model?: string;
+  /** Provider-supplied model list (Codex); undefined uses Claude's static one. */
+  modelOptions?: { id: string; label: string }[];
   effort?: EffortLevel;
   cliStatus: string;
   isStreaming: boolean;
@@ -269,6 +271,7 @@ function ContextBadge({ context }: { context: ContextInfo }) {
 export default function ChatTextArea({
   mode,
   model,
+  modelOptions,
   effort,
   cliStatus,
   isStreaming,
@@ -1169,7 +1172,11 @@ export default function ChatTextArea({
         <div className="flex items-center flex-wrap gap-1.5 min-w-0">
           <ModeSelector mode={mode} onChange={onModeChange} />
           <span className="text-[10px] text-vscode-descriptionFg opacity-30 select-none">|</span>
-          <ModelSelector model={model} onChange={onModelChange} />
+          <ModelSelector
+            model={model}
+            options={modelOptions}
+            onChange={onModelChange}
+          />
           <span className="text-[10px] text-vscode-descriptionFg opacity-30 select-none">|</span>
           <EffortSelector effort={effort} onChange={onEffortChange} />
           {contextInfo && (

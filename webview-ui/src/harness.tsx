@@ -271,6 +271,15 @@ const HARNESS_ACCOUNTS: StoredAccount[] = [
     isDefault: false,
     configDir: "/tmp/harness/acct-out",
   },
+  {
+    id: "acct-codex",
+    label: "vw.wargnier@gmail.com",
+    email: "vw.wargnier@gmail.com",
+    subscriptionType: "prolite",
+    isDefault: false,
+    configDir: "/tmp/harness/acct-codex",
+    provider: "codex",
+  },
 ];
 
 const bucket = (utilization: number) => ({
@@ -283,6 +292,7 @@ const HARNESS_USAGE: Record<string, UsageInfo | null> = {
   "acct-gmail": { fiveHour: bucket(42), sevenDay: bucket(66) },
   "acct-expired": null,
   "acct-out": null,
+  "acct-codex": { fiveHour: null, sevenDay: bucket(7) },
 };
 
 const params = new URLSearchParams(window.location.search);

@@ -28,6 +28,7 @@ export interface TaskUpdateEvent {
   subagentType?: string;
   taskType?: string;
   prompt?: string;
+  background?: boolean;
   status?: string;
   summary?: string;
   outputFile?: string;

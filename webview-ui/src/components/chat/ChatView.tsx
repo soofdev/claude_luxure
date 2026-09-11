@@ -7,6 +7,7 @@ import TabBar from "./TabBar";
 import SessionPostIt from "./SessionPostIt";
 import MarkerNoteModal from "./MarkerNoteModal";
 import QueuedMessages from "./QueuedMessages";
+import RunStatus from "./RunStatus";
 import DiffPanel from "../common/DiffPanel";
 import WorkingDots from "../common/WorkingDots";
 
@@ -38,6 +39,7 @@ interface ChatViewProps {
   onLoadEarlier?: () => void;
   mode: Mode;
   model?: string;
+  modelOptions?: { id: string; label: string }[];
   effort?: EffortLevel;
   sessionId?: string;
   activeTabId?: string;
@@ -135,6 +137,7 @@ export default function ChatView({
   onLoadEarlier,
   mode,
   model,
+  modelOptions,
   effort,
   sessionId,
   activeTabId,
@@ -455,8 +458,18 @@ export default function ChatView({
           ticker. Survives the turn ending, for background agents. */}
       {(transientStatus ||
         (runningTasks && runningTasks.length > 0) ||
-        (isStreaming && (thinkingTokens ?? 0) > 0)) && (
+        isStreaming) && (
         <div className="px-2 pt-1 space-y-1" role="status" aria-live="polite">
+          {isStreaming && (
+            <RunStatus
+              key={messages.find((m) => m.isStreaming)?.id || activeTabId}
+              startedAt={messages.find((m) => m.isStreaming)?.timestamp}
+              streamingText={streamingText}
+              activities={activities}
+              timeline={liveTimeline}
+              thinkingTokens={thinkingTokens}
+            />
+          )}
           {transientStatus && (
             <div className="flex items-center gap-2 text-[11px] rounded-md border border-[rgba(245,158,11,0.4)] bg-[rgba(245,158,11,0.08)] px-2.5 py-1.5 text-[#f59e0b]">
               <span className="w-1.5 h-1.5 rounded-full bg-[#f59e0b] animate-pulse shrink-0" />
@@ -507,13 +520,6 @@ export default function ChatView({
               })}
             </div>
           )}
-          {isStreaming && (thinkingTokens ?? 0) > 0 && (!runningTasks || runningTasks.length === 0) && (
-            <div className="flex items-center gap-2 text-[11px] px-2.5 py-0.5 text-vscode-descriptionFg">
-              <span className="italic">
-                Thinking… ~{(thinkingTokens ?? 0) >= 1000 ? `${((thinkingTokens ?? 0) / 1000).toFixed(1)}k` : thinkingTokens} tokens
-              </span>
-            </div>
-          )}
         </div>
       )}
 
@@ -529,6 +535,7 @@ export default function ChatView({
       <ChatTextArea
         mode={mode}
         model={model}
+        modelOptions={modelOptions}
         effort={effort}
         cliStatus={cliStatus}
         isStreaming={isStreaming}

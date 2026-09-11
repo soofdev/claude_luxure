@@ -1,20 +1,31 @@
 import { useState, useRef, useEffect } from "react";
 import { AVAILABLE_MODELS } from "../../types";
 
+interface ModelOption {
+  id: string;
+  label: string;
+  alias?: string;
+}
+
 interface ModelSelectorProps {
   model?: string;
+  /** Provider-supplied list. Codex advertises the models its signed-in plan can
+   * run, so the picker is account-specific; Claude's list is the static one. */
+  options?: ModelOption[];
   onChange: (model: string) => void;
 }
 
-function resolveLabel(model?: string): string {
-  if (!model) return "Sonnet 4";
-  const found = AVAILABLE_MODELS.find(
-    (m) => m.id === model || m.alias === model
-  );
+function resolveLabel(
+  model: string | undefined,
+  options: readonly ModelOption[],
+  fallback: string
+): string {
+  if (!model) return fallback;
+  const found = options.find((m) => m.id === model || m.alias === model);
   return found?.label ?? model;
 }
 
-export default function ModelSelector({ model, onChange }: ModelSelectorProps) {
+export default function ModelSelector({ model, options, onChange }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -28,7 +39,13 @@ export default function ModelSelector({ model, onChange }: ModelSelectorProps) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const currentLabel = resolveLabel(model);
+  const list: readonly ModelOption[] = options?.length
+    ? options
+    : AVAILABLE_MODELS;
+  // Claude defaults to Sonnet when nothing is set; Codex's default is whatever
+  // the account picks server-side, so say so rather than naming a wrong model.
+  const fallbackLabel = options?.length ? "Default model" : "Sonnet 4";
+  const currentLabel = resolveLabel(model, list, fallbackLabel);
 
   return (
     <div ref={ref} className="relative">
@@ -71,9 +88,11 @@ export default function ModelSelector({ model, onChange }: ModelSelectorProps) {
 
       {open && (
         <div className="absolute bottom-full left-0 mb-1 min-w-[160px] bg-[var(--vscode-dropdown-background,var(--vscode-input-background))] border border-[rgba(255,255,255,0.08)] rounded-md shadow-xl overflow-hidden z-50">
-          {AVAILABLE_MODELS.map((m) => {
+          {list.map((m) => {
             const isSelected =
-              model === m.id || model === m.alias || (!model && m.alias === "sonnet");
+              model === m.id ||
+              (!!m.alias && model === m.alias) ||
+              (!model && m.alias === "sonnet");
             return (
               <button
                 key={m.id}
@@ -88,9 +107,11 @@ export default function ModelSelector({ model, onChange }: ModelSelectorProps) {
                 }`}
               >
                 <span className="flex-1">{m.label}</span>
-                <span className="text-[9px] opacity-40 font-mono">
-                  {m.alias}
-                </span>
+                {m.alias && (
+                  <span className="text-[9px] opacity-40 font-mono">
+                    {m.alias}
+                  </span>
+                )}
                 {isSelected && (
                   <svg
                     width="12"

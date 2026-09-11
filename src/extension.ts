@@ -3,6 +3,7 @@ import { ChatViewProvider } from "./webview/ChatViewProvider";
 import { VirtualDocProvider, DIFF_SCHEME } from "./diff/VirtualDocProvider";
 import { log, clearLog } from "./utils/logger";
 import { clearClaudePathCache } from "./utils/claude-path";
+import { clearCodexPathCache } from "./utils/codex-path";
 
 export function activate(context: vscode.ExtensionContext) {
   clearLog();
@@ -106,6 +107,10 @@ export function activate(context: vscode.ExtensionContext) {
       if (e.affectsConfiguration("claude-luxure.claudePath")) {
         clearClaudePathCache();
         log("INFO", "claude-luxure.claudePath changed; re-resolving claude binary.");
+      }
+      if (e.affectsConfiguration("claude-luxure.codexPath")) {
+        clearCodexPathCache();
+        log("INFO", "claude-luxure.codexPath changed; re-resolving codex binary.");
       }
     })
   );

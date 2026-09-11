@@ -907,6 +907,7 @@ export default function App() {
         }
         mode={pv.mode ?? state.mode}
         model={pv.model ?? state.model}
+        modelOptions={pv.modelOptions ?? state.modelOptions}
         effort={pv.effort ?? state.effort}
         sessionId={pv.sessionId}
         activeTabId={activeId}

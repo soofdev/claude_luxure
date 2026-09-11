@@ -8,7 +8,7 @@ import {
   RefreshCw,
   LogOut,
 } from "lucide-react";
-import type { StoredAccount, UsageInfo } from "../../types";
+import type { AccountProvider, StoredAccount, UsageInfo } from "../../types";
 
 interface Props {
   accounts?: StoredAccount[];
@@ -28,6 +28,25 @@ interface Props {
   onRemove?: (accountId: string) => void;
   onReauth?: (accountId: string) => void;
   onLogout?: (accountId: string) => void;
+}
+
+/** Which CLI a row's account talks to. Only shown once more than one provider
+ * is configured — with a Claude-only list it would be noise on every row. */
+function ProviderChip({ provider }: { provider: AccountProvider }) {
+  const codex = provider === "codex";
+  return (
+    <span
+      title={codex ? "Codex (OpenAI)" : "Claude (Anthropic)"}
+      className="shrink-0 px-1 rounded text-[8px] uppercase tracking-wide leading-[13px] border"
+      style={
+        codex
+          ? { color: "#6ee7b7", borderColor: "rgba(110,231,183,0.35)" }
+          : { color: "#d9a066", borderColor: "rgba(217,160,102,0.35)" }
+      }
+    >
+      {codex ? "codex" : "claude"}
+    </span>
+  );
 }
 
 /** Row action: a per-account icon button. Quiet at rest and full-strength on the
@@ -129,6 +148,7 @@ export default function AccountSwitcher({
   }, [open]);
 
   const list = accounts ?? [];
+  const mixedProviders = new Set(list.map((a) => a.provider ?? "claude")).size > 1;
   const activeId = activeAccountId || "default";
   const active = list.find((a) => a.id === activeId);
   const activeLabel = active?.label || fallbackEmail || "Account";
@@ -189,6 +209,9 @@ export default function AccountSwitcher({
                     <span className="truncate text-[11px] text-vscode-fg">
                       {a.label}
                     </span>
+                    {mixedProviders && (
+                      <ProviderChip provider={a.provider ?? "claude"} />
+                    )}
                     {a.isDefault && (
                       <span className="text-[9px] text-vscode-descriptionFg opacity-50 shrink-0">
                         default
@@ -204,7 +227,11 @@ export default function AccountSwitcher({
                   <div className="flex items-center gap-0.5 shrink-0 opacity-40 group-hover:opacity-100 transition-opacity">
                     {onReauth && (
                       <RowAction
-                        title="Reconnect — sign out and log in again, as this or another Claude account (recreates the token)"
+                        title={
+                          (a.provider ?? "claude") === "codex"
+                            ? "Reconnect — start a fresh ChatGPT device sign-in for this Codex account"
+                            : "Reconnect — sign out and log in again, as this or another Claude account (recreates the token)"
+                        }
                         onClick={() => {
                           onReauth(a.id);
                           setOpen(false);

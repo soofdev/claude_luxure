@@ -113,6 +113,11 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Absolute path to the `claude` CLI binary. Leave empty to auto-detect (PATH, common install locations, and the native binary bundled with the official Claude Code extension). Set this if sends fail with `spawn claude ENOENT`."
+        },
+        "claude-luxure.codexPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the `codex` CLI binary, used by Codex accounts. Leave empty to auto-detect (common install locations, then the binary bundled with the official Codex/ChatGPT extension). Set this if Codex sends fail with `spawn codex ENOENT`."
         }
       }
     }
