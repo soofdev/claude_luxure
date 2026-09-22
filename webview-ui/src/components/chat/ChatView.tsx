@@ -451,10 +451,11 @@ export default function ChatView({
         />
       )}
 
+      <div className="shrink-0 border-t border-[rgba(255,255,255,0.12)]">
       {/* Cost bar */}
       {cost && (
         <div
-          className="px-3 py-0.5 text-[10px] text-vscode-descriptionFg border-t border-[rgba(255,255,255,0.04)] flex items-center gap-3"
+          className="px-3 py-0.5 text-[10px] text-vscode-descriptionFg flex items-center gap-3"
           title={`Session cost $${cost.totalCostUsd.toFixed(4)} · ${cost.inputTokens.toLocaleString()} tokens in · ${cost.outputTokens.toLocaleString()} tokens out`}
         >
           <span>${cost.totalCostUsd.toFixed(2)}</span>
@@ -470,12 +471,7 @@ export default function ChatView({
         transientStatus ||
         (runningTasks && runningTasks.length > 0) ||
         isStreaming) && (
-        <div className="px-2 pt-1 flex items-start gap-2" role="status" aria-live="polite">
-          {voice && (
-            <div className="h-[24px] flex items-center">
-              <VoiceOrb voice={voice} provider={provider} />
-            </div>
-          )}
+        <div className="px-2 py-2 flex items-start gap-2" role="status" aria-live="polite">
           <div className="flex-1 min-w-0 space-y-1">
           {isStreaming && (
             <RunStatus
@@ -538,6 +534,11 @@ export default function ChatView({
             </div>
           )}
           </div>
+          {voice && (
+            <div className="h-[40px] flex items-center">
+              <VoiceOrb voice={voice} provider={provider} />
+            </div>
+          )}
         </div>
       )}
 
@@ -591,6 +592,7 @@ export default function ChatView({
         onReauthAccount={onReauthAccount}
         onLogoutAccount={onLogoutAccount}
       />
+      </div>
     </div>
   );
 }

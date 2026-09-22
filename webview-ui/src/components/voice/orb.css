@@ -5,7 +5,7 @@
    --session-color (tinted per provider by VoiceOrb). */
 
 .voice-orb {
-  --orb-size: 18px;
+  --orb-size: 26px;
   --session-color-glow: color-mix(in srgb, var(--session-color) 55%, transparent);
   position: relative;
   display: inline-flex;
@@ -28,8 +28,17 @@
 }
 
 .voice-orb[data-state="off"] {
-  opacity: 0.4;
-  filter: grayscale(0.85);
+  opacity: 0.72;
+  filter: grayscale(0.55);
+}
+
+.voice-orb[data-state="off"]::before {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.voice-orb[data-state="off"]:hover {
+  opacity: 1;
+  filter: grayscale(0);
 }
 
 .voice-orb[data-state="off"] .orb-core,
@@ -92,7 +101,7 @@
     transparent 80%,
     var(--session-color)
   );
-  filter: blur(2.5px);
+  filter: blur(3.5px);
   opacity: 0.8;
   animation: orb-plasma-spin 6s linear infinite;
 }
@@ -180,13 +189,26 @@
   transition: box-shadow 400ms ease;
 }
 
+.voice-orb[data-state="idle"]::before {
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--session-color) 30%, transparent);
+}
+
+.voice-orb[data-state="idle"] {
+  animation: orb-breathe 4.5s ease-in-out infinite;
+}
+
+@keyframes orb-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+
 .voice-orb[data-state="speaking"]::before {
   animation: orb-halo 1.6s ease-in-out infinite;
 }
 
 @keyframes orb-halo {
-  0%, 100% { box-shadow: 0 0 3px 0 color-mix(in srgb, var(--session-color) 35%, transparent); }
-  50% { box-shadow: 0 0 11px 2px color-mix(in srgb, var(--session-color) 80%, transparent); }
+  0%, 100% { box-shadow: 0 0 5px 0 color-mix(in srgb, var(--session-color) 40%, transparent); }
+  50% { box-shadow: 0 0 16px 3px color-mix(in srgb, var(--session-color) 85%, transparent); }
 }
 
 .voice-orb[data-state="speaking"] {
@@ -195,7 +217,7 @@
 
 @keyframes orb-bounce {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-1.5px); }
+  50% { transform: translateY(-2px); }
 }
 
 .voice-orb[data-state="waking"] {
@@ -263,9 +285,55 @@
   100% { transform: scale(2.4); opacity: 0; }
 }
 
+/* Hover card — claude-voice's .orb-label, widened to carry an explanation.
+   Anchored to the wrapper's right edge, since the orb lives at the right end
+   of the status strip. */
+.voice-orb-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: max-content;
+  max-width: 230px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(28, 28, 30, 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  transform: translateY(3px);
+  pointer-events: none;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.voice-orb-tip strong {
+  color: var(--session-color);
+  font-weight: 600;
+}
+
+.voice-orb-tip > span {
+  color: var(--vscode-descriptionForeground);
+}
+
+.voice-orb-wrap:hover .voice-orb-tip,
+.voice-orb:focus-visible ~ .voice-orb-tip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .voice-orb-label {
   color: var(--session-color);
   font-size: 11px;
+  font-weight: 500;
 }
 
 /* Reduced motion: the global rule in index.css freezes keyframes; keep the
