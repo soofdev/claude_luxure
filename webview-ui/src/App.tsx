@@ -31,6 +31,7 @@ import type {
   StoredAccount,
   UsageInfo,
   QueuedMessage,
+  VoiceStatus,
 } from "./types";
 
 /** Replace a task card (matched by toolUseId) inside timeline parts,
@@ -82,6 +83,7 @@ export default function App() {
   const [accounts, setAccounts] = useState<StoredAccount[]>([]);
   const [activeAccountId, setActiveAccountId] = useState<string>("default");
   const [usage, setUsage] = useState<UsageInfo | null>(null);
+  const [voice, setVoice] = useState<VoiceStatus | null>(null);
   const [usageByAccount, setUsageByAccount] = useState<
     Record<string, UsageInfo | null>
   >({});
@@ -379,6 +381,10 @@ export default function App() {
         }
         break;
       }
+
+      case "voiceState":
+        setVoice(msg.voice);
+        break;
 
       case "summarizeProgress":
         setSummarizeProgress(msg.total > 0 ? { done: msg.done, total: msg.total } : null);
@@ -968,6 +974,8 @@ export default function App() {
         onAcceptAll={handleAcceptAll}
         onRejectAll={handleRejectAll}
         onOpenSkills={() => setSkillsOpen(true)}
+        voice={focused ? voice : null}
+        provider={pv.provider ?? state.provider}
         onOpenMcp={handleOpenMcp}
         onRestartMcp={handleRestartMcp}
         mcpServers={mcpServers}

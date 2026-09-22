@@ -103,6 +103,19 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    provider.voice,
+    vscode.commands.registerCommand("claude-luxure.voiceToggle", () =>
+      provider.voice.toggle()
+    ),
+    vscode.commands.registerCommand("claude-luxure.voiceStop", () =>
+      provider.voice.stop()
+    ),
+    vscode.commands.registerCommand("claude-luxure.voiceSetElevenLabsKey", () =>
+      provider.voice.setElevenLabsKey()
+    )
+  );
+
+  context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("claude-luxure.claudePath")) {
         clearClaudePathCache();

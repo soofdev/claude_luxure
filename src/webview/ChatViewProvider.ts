@@ -26,6 +26,7 @@ import { resolveCodexPath, hasCodexBinary } from "../utils/codex-path";
  * provider-agnostic — only the construction site branches. */
 type AgentBridge = ClaudeBridge | CodexBridge;
 import { DiffManager } from "../diff/DiffManager";
+import { VoiceController } from "../voice/VoiceController";
 import { SnapshotManager } from "../diff/SnapshotManager";
 import { SessionManager } from "../sessions/SessionManager";
 import {
@@ -516,10 +517,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   // re-read transcript files. A session's first user message never changes.
   private readonly tabNameCache = new Map<string, string>();
 
+  /** Voice mode — speaks finished replies in the focused conversation. */
+  readonly voice: VoiceController;
+
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly outputChannel: vscode.OutputChannel
   ) {
+    this.voice = new VoiceController(
+      context,
+      (system, user, accountId) =>
+        this.runClaudePrint(user, accountId, ["--system-prompt", system, "--tools", ""]),
+      (voice) => this.postMessage({ type: "voiceState", voice })
+    );
     this.diffManager.setDiffCallback((diff) => {
       this.postMessage({
         type: "diffUpdate",
@@ -1061,7 +1071,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * and in a throwaway cwd so the transient print-mode session is NOT written
    * into the project's transcript folder (which would otherwise pollute the
    * history); the transcript it does write is deleted afterwards. */
-  private runClaudePrint(prompt: string, accountId?: string): Promise<string> {
+  private runClaudePrint(
+    prompt: string,
+    accountId?: string,
+    extraArgs: string[] = []
+  ): Promise<string> {
     // These one-shots are always `claude -p` (post-it emoji, summaries). A Codex
     // conversation's config dir is a CODEX_HOME — handing it to the Claude CLI
     // as CLAUDE_CONFIG_DIR would point it at a profile with no Claude
@@ -1092,6 +1106,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           "claude-haiku-4-5-20251001",
           "--output-format",
           "json",
+          ...extraArgs,
         ],
         { cwd, env, timeout: 60000, maxBuffer: 4 * 1024 * 1024 },
         (err, stdout) => {
@@ -2197,6 +2212,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.handleListSessions();
         this.sendAccountsList();
         void this.pollUsageForActive();
+        this.postMessage({ type: "voiceState", voice: this.voice.status() });
         break;
       }
 
@@ -2242,8 +2258,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      case "voiceToggle": {
+        await this.voice.toggle();
+        break;
+      }
+
+      case "voiceStop": {
+        this.voice.stop();
+        break;
+      }
+
+      case "voiceReplay": {
+        const runtime = this.activeKey ? this.runtimes.get(this.activeKey) : undefined;
+        this.voice.replay(message.messageId, message.text, runtime?.accountId);
+        break;
+      }
+
       case "sendMessage": {
         log("INFO", "sendMessage:", (message as any).text?.slice(0, 100));
+        // The user has moved on — cut off any reply still being read out.
+        if (this.voice.status().speakingMessageId) {
+          this.voice.stop();
+        }
         // A composer in the unfocused pane targets ITS conversation: focus
         // follows the send, deterministically, before the message is handled.
         const targetTab = (message as { tabId?: string }).tabId;
@@ -4958,7 +4994,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
       }
 
+      const finishedId = runtime.streamingMessageId;
       this.finalizeStreamingMessage(runtimeKey, runtime, isActive());
+
+      // Voice mode: read the finished reply aloud — only for a successful turn
+      // in the conversation the user is looking at (the focused pane's tab).
+      if (
+        finishedId &&
+        isActive() &&
+        (event as ClaudeEvent & { is_error?: boolean }).is_error !== true
+      ) {
+        const finished = runtime.messages.find((m) => m.id === finishedId);
+        if (finished?.role === "assistant" && finished.content.trim()) {
+          this.voice.speak(finished.id, finished.content, runtime.accountId);
+        }
+      }
 
       // First completed turn: pick the conversation's post-it emoji from the
       // real content (one user message alone is usually not enough context).
@@ -6507,6 +6557,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   dispose(): void {
+    this.voice.dispose();
     this.stopUsagePolling();
     this.stopHeartbeat();
     if (this.paneTicker) {

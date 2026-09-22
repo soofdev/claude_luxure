@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback, Fragment } from "react";
 import { useRenderPerf } from "../../perf";
-import type { ChatMessage, CostInfo, ContextInfo, ActivityEvent, TaskActivity, TimelinePart, SessionInfo, SessionMarker, Mode, EffortLevel, PendingDiff, McpServerStatus, StoredAccount, UsageInfo, QueuedMessage } from "../../types";
+import type { ChatMessage, CostInfo, ContextInfo, ActivityEvent, TaskActivity, TimelinePart, SessionInfo, SessionMarker, Mode, EffortLevel, PendingDiff, McpServerStatus, StoredAccount, UsageInfo, QueuedMessage, VoiceStatus, AccountProvider } from "../../types";
 import MessageRow from "./MessageRow";
 import ChatTextArea from "./ChatTextArea";
 import TabBar from "./TabBar";
@@ -8,6 +8,7 @@ import SessionPostIt from "./SessionPostIt";
 import MarkerNoteModal from "./MarkerNoteModal";
 import QueuedMessages from "./QueuedMessages";
 import RunStatus from "./RunStatus";
+import VoiceOrb from "../voice/VoiceOrb";
 import DiffPanel from "../common/DiffPanel";
 import WorkingDots from "../common/WorkingDots";
 
@@ -104,6 +105,10 @@ interface ChatViewProps {
   onAcceptAll: () => void;
   onRejectAll: () => void;
   onOpenSkills?: () => void;
+  /** Voice mode status — set only for the focused pane (the one that speaks). */
+  voice?: VoiceStatus | null;
+  /** Active conversation's provider — tints the voice orb. */
+  provider?: AccountProvider;
   onOpenMcp?: () => void;
   onRestartMcp?: () => void;
   mcpServers?: McpServerStatus[];
@@ -190,6 +195,8 @@ export default function ChatView({
   onAcceptAll,
   onRejectAll,
   onOpenSkills,
+  voice,
+  provider,
   onOpenMcp,
   onRestartMcp,
   mcpServers,
@@ -413,6 +420,9 @@ export default function ChatView({
                 onModeChange={onModeChange}
                 onModelChange={onModelChange}
                 onSwitchFork={onSwitchFork}
+                voiceSpeaking={
+                  !!voice?.speakingMessageId && voice.speakingMessageId === msg.id
+                }
               />
               {msg.compactBoundary && <SummaryDivider />}
             </Fragment>
@@ -456,10 +466,17 @@ export default function ChatView({
       {/* Live status strip: the agent dock (one clickable chip per working
           agent — click scrolls to its card), retry/limit chip, thinking
           ticker. Survives the turn ending, for background agents. */}
-      {(transientStatus ||
+      {(voice ||
+        transientStatus ||
         (runningTasks && runningTasks.length > 0) ||
         isStreaming) && (
-        <div className="px-2 pt-1 space-y-1" role="status" aria-live="polite">
+        <div className="px-2 pt-1 flex items-start gap-2" role="status" aria-live="polite">
+          {voice && (
+            <div className="h-[24px] flex items-center">
+              <VoiceOrb voice={voice} provider={provider} />
+            </div>
+          )}
+          <div className="flex-1 min-w-0 space-y-1">
           {isStreaming && (
             <RunStatus
               key={messages.find((m) => m.isStreaming)?.id || activeTabId}
@@ -520,6 +537,7 @@ export default function ChatView({
               })}
             </div>
           )}
+          </div>
         </div>
       )}
 
