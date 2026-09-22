@@ -215,6 +215,13 @@
           ],
           "default": "plasma",
           "description": "Look of the voice orb above the composer."
+        },
+        "claude-luxure.fontSize": {
+          "type": "number",
+          "default": 14,
+          "minimum": 11,
+          "maximum": 24,
+          "markdownDescription": "Text size (px) for the conversation and the message box, independent of the editor's own zoom. Adjust it from the **Aa** control in the composer bar."
         }
       }
     }

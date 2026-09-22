@@ -84,6 +84,7 @@ export default function App() {
   const [activeAccountId, setActiveAccountId] = useState<string>("default");
   const [usage, setUsage] = useState<UsageInfo | null>(null);
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
+  const [fontSize, setFontSize] = useState(14);
   const [usageByAccount, setUsageByAccount] = useState<
     Record<string, UsageInfo | null>
   >({});
@@ -381,6 +382,10 @@ export default function App() {
         }
         break;
       }
+
+      case "fontSize":
+        setFontSize(msg.size);
+        break;
 
       case "voiceState":
         setVoice(msg.voice);
@@ -975,6 +980,7 @@ export default function App() {
         onRejectAll={handleRejectAll}
         onOpenSkills={() => setSkillsOpen(true)}
         voice={focused ? voice : null}
+        fontSize={fontSize}
         provider={pv.provider ?? state.provider}
         onOpenMcp={handleOpenMcp}
         onRestartMcp={handleRestartMcp}

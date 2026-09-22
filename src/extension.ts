@@ -121,6 +121,9 @@ export function activate(context: vscode.ExtensionContext) {
         clearClaudePathCache();
         log("INFO", "claude-luxure.claudePath changed; re-resolving claude binary.");
       }
+      if (e.affectsConfiguration("claude-luxure.fontSize")) {
+        provider.sendFontSize();
+      }
       if (e.affectsConfiguration("claude-luxure.codexPath")) {
         clearCodexPathCache();
         log("INFO", "claude-luxure.codexPath changed; re-resolving codex binary.");

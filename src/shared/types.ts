@@ -370,6 +370,7 @@ export type WebviewMessage =
   | { type: "voiceToggle" }
   | { type: "voiceStop" }
   | { type: "voiceReplay"; messageId: string; text: string }
+  | { type: "setFontSize"; size: number }
   /** Periodic heap telemetry from the webview memory watchdog. */
   | { type: "memStats"; usedMB: number; limitMB: number; pct: number }
   /** Heap crossed the pressure threshold — host trims display windows. */
@@ -499,7 +500,8 @@ export type ExtensionMessage =
   /** Liveness probe; the webview answers "pong". A visible webview that stays
    * silent gets recreated (a crashed renderer emits no VS Code event). */
   | { type: "ping"; t: number }
-  | { type: "voiceState"; voice: VoiceStatus };
+  | { type: "voiceState"; voice: VoiceStatus }
+  | { type: "fontSize"; size: number };
 
 export interface ExtensionState {
   mode: Mode;

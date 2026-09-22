@@ -16,6 +16,7 @@ import ModelSelector from "./ModelSelector";
 import ContextMenu from "./ContextMenu";
 import SlashCommandMenu from "./SlashCommandMenu";
 import PromptHistoryMenu from "./PromptHistoryMenu";
+import FontSizeControl from "./FontSizeControl";
 import {
   attributeMagieWords,
   buildPhraseCorpus,
@@ -80,6 +81,8 @@ interface ChatTextAreaProps {
   onEffortChange: (effort: EffortLevel) => void;
   onReview?: () => void;
   onOpenSkills?: () => void;
+  /** Chat text size (px) — shown and changed by the composer's Aa control. */
+  fontSize?: number;
   onOpenMcp?: () => void;
   onRestartMcp?: () => void;
   mcpServers?: McpServerStatus[];
@@ -294,6 +297,7 @@ export default function ChatTextArea({
   onEffortChange,
   onReview,
   onOpenSkills,
+  fontSize = 14,
   onOpenMcp,
   onRestartMcp,
   mcpServers,
@@ -1135,7 +1139,7 @@ export default function ChatTextArea({
           {/* Highlight layer — renders styled mentions behind the textarea */}
           <div
             ref={highlightRef}
-            className="absolute inset-0 pointer-events-none text-[13px] leading-relaxed whitespace-pre-wrap break-words text-transparent overflow-hidden"
+            className="chat-input-text absolute inset-0 pointer-events-none text-[13px] leading-relaxed whitespace-pre-wrap break-words text-transparent overflow-hidden"
             aria-hidden="true"
           >
             {renderHighlightedText(inputValue)}
@@ -1155,7 +1159,7 @@ export default function ChatTextArea({
                 ? "Describe what to analyze... (/ for commands)"
                 : "Ask Claude anything... (/ commands, @ files)"
             }
-            className="relative w-full bg-transparent text-[13px] resize-none outline-none min-h-[20px] max-h-[160px] leading-relaxed placeholder:text-vscode-descriptionFg"
+            className="chat-input-text relative w-full bg-transparent text-[13px] resize-none outline-none min-h-[20px] max-h-[160px] leading-relaxed placeholder:text-vscode-descriptionFg"
             style={{
               color: "inherit",
               caretColor: "var(--vscode-editor-foreground)",
@@ -1185,6 +1189,11 @@ export default function ChatTextArea({
               <ContextBadge context={contextInfo} />
             </>
           )}
+          <span className="text-[10px] text-vscode-descriptionFg opacity-30 select-none">|</span>
+          <FontSizeControl
+            size={fontSize}
+            onChange={(size) => vscode.postMessage({ type: "setFontSize", size })}
+          />
           {onOpenSkills && (
             <>
               <span className="text-[10px] text-vscode-descriptionFg opacity-30 select-none">|</span>

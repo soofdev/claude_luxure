@@ -186,7 +186,7 @@ export default function MessageRow({
           }`}
         >
           <div
-            className="text-sm text-vscode-fg whitespace-pre-wrap select-text cursor-text"
+            className="chat-text text-sm text-vscode-fg whitespace-pre-wrap select-text cursor-text"
             onClick={
               canEdit && onStartEdit
                 ? () => {

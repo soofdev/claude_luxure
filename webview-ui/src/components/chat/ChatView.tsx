@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useCallback, Fragment } from "react";
+import type { CSSProperties } from "react";
 import { useRenderPerf } from "../../perf";
 import type { ChatMessage, CostInfo, ContextInfo, ActivityEvent, TaskActivity, TimelinePart, SessionInfo, SessionMarker, Mode, EffortLevel, PendingDiff, McpServerStatus, StoredAccount, UsageInfo, QueuedMessage, VoiceStatus, AccountProvider } from "../../types";
 import MessageRow from "./MessageRow";
@@ -109,6 +110,8 @@ interface ChatViewProps {
   voice?: VoiceStatus | null;
   /** Active conversation's provider — tints the voice orb. */
   provider?: AccountProvider;
+  /** Text size (px) for the transcript and message boxes. */
+  fontSize?: number;
   onOpenMcp?: () => void;
   onRestartMcp?: () => void;
   mcpServers?: McpServerStatus[];
@@ -197,6 +200,7 @@ export default function ChatView({
   onOpenSkills,
   voice,
   provider,
+  fontSize = 14,
   onOpenMcp,
   onRestartMcp,
   mcpServers,
@@ -305,7 +309,11 @@ export default function ChatView({
   return (
     // data-pane-root scopes the Lightbox's gallery collection to this
     // instance's transcript (each split pane is its own gallery).
-    <div className="flex flex-col h-full" data-pane-root="">
+    <div
+      className="chat-scale flex flex-col h-full"
+      style={{ "--chat-font-size": `${fontSize}px` } as CSSProperties}
+      data-pane-root=""
+    >
       {/* Tab bar */}
       <TabBar
         sessions={sessions}
@@ -577,6 +585,7 @@ export default function ChatView({
         onEffortChange={onEffortChange}
         onReview={handleReview}
         onOpenSkills={onOpenSkills}
+        fontSize={fontSize}
         onOpenMcp={onOpenMcp}
         onRestartMcp={onRestartMcp}
         mcpServers={mcpServers}
